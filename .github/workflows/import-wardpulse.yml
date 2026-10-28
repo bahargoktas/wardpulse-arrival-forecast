@@ -1,0 +1,54 @@
+name: Publish WardPulse files
+on:
+  push:
+    paths:
+      - ".wardpulse_payload.b85"
+permissions:
+  contents: write
+jobs:
+  restore-test-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Restore source tree
+        shell: bash
+        run: |
+          python -m pip install --quiet brotli
+          python - <<'PY'
+          import base64
+          import brotli
+          import json
+          from pathlib import Path
+          root = Path.cwd().resolve()
+          p = Path(".wardpulse_payload.b85")
+          contents = json.loads(brotli.decompress(base64.b85decode(p.read_text(encoding="ascii").strip())))
+          for rel, text in contents.items():
+              item = Path(rel)
+              if item.is_absolute() or ".." in item.parts or not item.parts:
+                  raise ValueError(f"Unsafe path: {rel}")
+              dest = (root / item).resolve()
+              if not dest.is_relative_to(root):
+                  raise ValueError(f"Unsafe path: {rel}")
+              dest.parent.mkdir(parents=True, exist_ok=True)
+              dest.write_text(text, encoding="utf-8")
+          assert len(contents) >= 30
+          print(f"Restored {len(contents)} files")
+          PY
+      - name: Install dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Run automated tests
+        run: python -m pytest -q
+      - name: Generate reports and example data
+        run: python -m wardpulse all --output-dir reports
+      - name: Publish full file tree
+        shell: bash
+        run: |
+          rm .wardpulse_payload.b85 .github/workflows/import-wardpulse.yml
+          git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "Publish WardPulse source, evaluations, tests and documentation"
+          git push
