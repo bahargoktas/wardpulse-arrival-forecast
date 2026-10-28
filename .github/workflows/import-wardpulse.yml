@@ -1,0 +1,58 @@
+name: Publish WardPulse source
+on:
+  push:
+    paths:
+      - ".wardpulse_payload.b85"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Restore source files
+        shell: bash
+        run: |
+          python -m pip install --quiet brotli
+          python - <<'PY'
+          import base64
+          import brotli
+          import json
+          from pathlib import Path
+          root = Path.cwd().resolve()
+          contents = Path(".wardpulse_payload.b85").read_text(encoding="ascii").strip()
+          data = json.loads(brotli.decompress(base64.b85decode(contents)).decode("utf-8"))
+          for rel, content in data.items():
+              relative = Path(rel)
+              if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+                  raise ValueError("Invalid file path")
+              dest = (root / relative).resolve()
+              if not dest.is_relative_to(root):
+                  raise ValueError("Unsafe path")
+              dest.parent.mkdir(parents=True, exist_ok=True)
+              dest.write_text(content, encoding="utf-8")
+          print(f"Restored {len(data)} source files")
+          PY
+      - name: Install dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Test project
+        run: python -m pytest -q
+      - name: Generate synthetic sample data
+        run: python -m wardpulse generate --output data/synthetic_hourly_arrivals.csv --days 150 --seed 2026
+      - name: Reproduce reports and plot
+        run: python -m wardpulse all --output-dir reports
+      - name: Commit complete reproducible project
+        run: |
+          rm .wardpulse_payload.b85
+          rm .github/workflows/import-wardpulse.yml
+          git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "Publish reproducible WardPulse project"
+          git push
